@@ -69,6 +69,6 @@ class GestureDetector(
     }
 
     private companion object {
-        const val DOUBLE_PRESS_WINDOW_MS = 350L
+        const val DOUBLE_PRESS_WINDOW_MS = 200L
     }
 }
