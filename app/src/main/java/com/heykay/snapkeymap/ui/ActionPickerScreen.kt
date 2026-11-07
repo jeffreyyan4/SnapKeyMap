@@ -1,6 +1,7 @@
 package com.heykay.snapkeymap.ui
 
 import android.app.Activity
+import android.app.NotificationManager
 import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Intent
@@ -11,20 +12,25 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Block
 import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.Call
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.AlertDialog
@@ -36,7 +42,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -49,42 +54,53 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.content.IntentCompat
 import androidx.core.graphics.drawable.toBitmap
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.heykay.snapkeymap.DeviceAction
 import com.heykay.snapkeymap.Gesture
+import com.heykay.snapkeymap.RingerMode
 import com.heykay.snapkeymap.Section
 import com.heykay.snapkeymap.SnapAction
 import com.heykay.snapkeymap.SnapEngine
+import com.heykay.snapkeymap.canUseShizuku
+import com.heykay.snapkeymap.editRingerPreset
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-private data class AppEntry(val label: String, val component: ComponentName) {
+internal data class AppEntry(val label: String, val component: ComponentName) {
     val packageName: String get() = component.packageName
 }
 
-private fun loadActivities(pm: PackageManager, intent: Intent, exclude: String): List<AppEntry> =
+internal fun loadActivities(pm: PackageManager, intent: Intent, exclude: String): List<AppEntry> =
     pm.queryIntentActivities(intent, 0)
         .map { AppEntry(it.loadLabel(pm).toString(), ComponentName(it.activityInfo.packageName, it.activityInfo.name)) }
         .filter { it.packageName != exclude }
         .sortedBy { it.label.lowercase() }
 
+internal fun loadLauncherApps(pm: PackageManager, exclude: String): List<AppEntry> =
+    loadActivities(pm, Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), exclude)
+        .distinctBy { it.packageName }
+
 @Composable
 fun ActionPickerScreen(gesture: Gesture, onDone: () -> Unit) {
     val context = LocalContext.current
     val pm = context.packageManager
-    val config by SnapEngine.store.config.collectAsState()
+    val config by SnapEngine.store.config.collectAsStateWithLifecycle()
     val current = config.action(gesture)
     var query by rememberSaveable { mutableStateOf("") }
     var showLinkDialog by rememberSaveable { mutableStateOf(false) }
     var showShortcuts by rememberSaveable { mutableStateOf(false) }
+    var showRingerDialog by rememberSaveable { mutableStateOf(false) }
+    var showDndDialog by rememberSaveable { mutableStateOf(false) }
 
     val apps by produceState<List<AppEntry>?>(null) {
         value = withContext(Dispatchers.IO) {
-            loadActivities(pm, Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), context.packageName)
-                .distinctBy { it.packageName }
+            loadLauncherApps(pm, context.packageName)
         }
     }
     val shortcutApps by produceState<List<AppEntry>?>(null) {
@@ -95,7 +111,11 @@ fun ActionPickerScreen(gesture: Gesture, onDone: () -> Unit) {
 
     fun choose(action: SnapAction) {
         SnapEngine.store.update { it.copy(actions = it.actions + (gesture to action)) }
-        onDone()
+        val needsDnd = action is SnapAction.Ringer && RingerMode.SILENT in action.modes && !canUseShizuku() ||
+            action == SnapAction.Device(DeviceAction.DO_NOT_DISTURB)
+        if (needsDnd && !context.getSystemService(NotificationManager::class.java).isNotificationPolicyAccessGranted) {
+            showDndDialog = true
+        } else onDone()
     }
 
     val shortcutResult = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -134,9 +154,28 @@ fun ActionPickerScreen(gesture: Gesture, onDone: () -> Unit) {
 
     val search = query.trim()
     fun matches(text: String) = search.isEmpty() || text.contains(search, ignoreCase = true)
+    val filteredApps = remember(apps, search) { apps?.filter { matches(it.label) } }
+    val actionsBySection = remember(search) {
+        Section.entries.associateWith { section ->
+            DeviceAction.entries.filter { it.section == section && matches(it.label) }
+        }
+    }
 
     SnapScaffold(title = gesture.title, onBack = onDone) { padding ->
-        LazyColumn(Modifier.fillMaxSize().padding(padding)) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().consumeWindowInsets(padding).imePadding(),
+            contentPadding = padding,
+        ) {
+            if (current != SnapAction.NoAction) {
+                item(key = "current") {
+                    PickRow(
+                        icon = { VectorIcon(actionIcon(current)) },
+                        title = "Current",
+                        subtitle = current.label,
+                        selected = true,
+                    ) { onDone() }
+                }
+            }
             item {
                 OutlinedTextField(
                     value = query,
@@ -157,10 +196,19 @@ fun ActionPickerScreen(gesture: Gesture, onDone: () -> Unit) {
                 }
             }
             Section.entries.forEach { section ->
-                val actions = DeviceAction.entries.filter { it.section == section && matches(it.label) }
-                if (actions.isNotEmpty()) {
+                val actions = actionsBySection.getValue(section)
+                val showRinger = section == Section.PHONE && matches("Ringer mode, Ring, Vibrate, Silent")
+                if (actions.isNotEmpty() || showRinger) {
                     item { SectionHeader(section.title, Modifier.padding(horizontal = 16.dp)) }
-                    items(actions) { device ->
+                    if (showRinger) item {
+                        PickRow(
+                            icon = { VectorIcon(actionIcon(SnapAction.Ringer(RingerMode.entries.toList()))) },
+                            title = "Ringer mode",
+                            subtitle = (current as? SnapAction.Ringer)?.label ?: "Choose which modes to cycle through",
+                            selected = current is SnapAction.Ringer,
+                        ) { showRingerDialog = true }
+                    }
+                    items(actions, key = { "device:" + it.name }) { device ->
                         val action = SnapAction.Device(device)
                         PickRow(
                             icon = { VectorIcon(actionIcon(action)) },
@@ -244,11 +292,11 @@ fun ActionPickerScreen(gesture: Gesture, onDone: () -> Unit) {
             }
 
             item { SectionHeader("Open an app", Modifier.padding(horizontal = 16.dp)) }
-            val appList = apps
+            val appList = filteredApps
             if (appList == null) {
                 item { Loading() }
             } else {
-                items(appList.filter { matches(it.label) }, key = { "app:" + it.packageName }) { entry ->
+                items(appList, key = { "app:" + it.packageName }) { entry ->
                     PickRow(
                         icon = { AppIcon(entry.component) },
                         title = entry.label,
@@ -269,6 +317,27 @@ fun ActionPickerScreen(gesture: Gesture, onDone: () -> Unit) {
             },
         )
     }
+    if (showRingerDialog) {
+        RingerSheet(
+            presets = config.ringerPresets,
+            selected = (current as? SnapAction.Ringer)?.modes,
+            assigned = config.actions.values.filterIsInstance<SnapAction.Ringer>().map { it.modes }.toSet(),
+            onPick = { modes ->
+                showRingerDialog = false
+                choose(SnapAction.Ringer(modes))
+            },
+            onSave = { old, modes ->
+                SnapEngine.store.update {
+                    if (old == null) it.copy(ringerPresets = it.ringerPresets + listOf(modes)) else it.editRingerPreset(old, modes)
+                }
+            },
+            onDelete = { modes ->
+                SnapEngine.store.update { it.copy(ringerPresets = it.ringerPresets - listOf(modes).toSet()) }
+            },
+            onDismiss = { showRingerDialog = false },
+        )
+    }
+    if (showDndDialog) DndAccessDialog(onDone, forSilent = current is SnapAction.Ringer)
 }
 
 @Composable
@@ -281,7 +350,8 @@ private fun PickRow(
     onClick: () -> Unit,
 ) {
     ListItem(
-        modifier = Modifier.clickable(onClick = onClick).padding(start = if (indent) 40.dp else 0.dp),
+        modifier = Modifier.selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
+            .padding(start = if (indent) 40.dp else 0.dp),
         leadingContent = icon,
         headlineContent = { Text(title) },
         supportingContent = if (subtitle != null) {
@@ -310,13 +380,15 @@ private fun Loading() {
 private val iconCache = LruCache<String, ImageBitmap>(300)
 
 @Composable
-private fun AppIcon(component: ComponentName) {
+internal fun AppIcon(component: ComponentName) {
     val pm = LocalContext.current.packageManager
-    val key = component.flattenToString()
+    val sizePx = with(LocalDensity.current) { 40.dp.roundToPx() }
+    val key = "${component.flattenToString()}:$sizePx"
     val icon by produceState<ImageBitmap?>(iconCache.get(key), key) {
+        value = iconCache.get(key)
         if (value == null) {
             value = withContext(Dispatchers.IO) {
-                runCatching { pm.getActivityIcon(component).toBitmap(96, 96).asImageBitmap() }
+                runCatching { pm.getActivityIcon(component).toBitmap(sizePx, sizePx).asImageBitmap() }
                     .getOrNull()
                     ?.also { iconCache.put(key, it) }
             }
@@ -335,14 +407,16 @@ private fun LinkDialog(initial: String, onDismiss: () -> Unit, onConfirm: (Strin
         onDismissRequest = onDismiss,
         title = { Text("Open a link") },
         text = {
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                label = { Text("Link") },
-                supportingText = { Text("For example https://maps.google.com or spotify:") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-            )
+            Box(Modifier.verticalScroll(rememberScrollState())) {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    label = { Text("Link") },
+                    supportingText = { Text("For example spotify: or\nsms:+15551234567?body=On my way") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                )
+            }
         },
         confirmButton = {
             TextButton(onClick = { onConfirm(text.trim()) }, enabled = valid) { Text("Save") }

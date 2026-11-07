@@ -25,10 +25,12 @@ enum class LogSource { LOCAL, SHIZUKU }
  */
 class LogReader(
     private val context: Context,
-    private val onLine: (timestamp: String, uid: String, tag: String, message: String) -> Unit,
+    private val onLine: (timestamp: String, uid: String, tid: String, tag: String, message: String) -> Unit,
     private val onAccess: (LogAccess) -> Unit,
     private val onSource: (LogSource) -> Unit,
     private val dispatchAccess: (() -> Unit) -> Unit = { it() },
+    private val shouldParse: () -> Boolean = { true },
+    private val onStart: () -> Unit = {},
 ) {
     @Volatile private var session: Session? = null
     @Volatile private var tryLocal = false
@@ -45,6 +47,7 @@ class LogReader(
         if (preferShizuku) tryLocal = false
         val next = Session()
         session = next
+        onStart()
         worker.execute { next.run() }
     }
 
@@ -99,19 +102,21 @@ class LogReader(
                 input.bufferedReader().use { reader ->
                     while (active) {
                         val line = reader.readLine() ?: break
+                        if (full && !shouldParse()) continue
                         val match = LINE.matchEntire(line) ?: continue
                         val timestamp = match.groupValues[1]
                         val uid = match.groupValues[2]
                         val pid = match.groupValues[3].toIntOrNull() ?: continue
-                        val tag = match.groupValues[4]
-                        val message = match.groupValues[5]
+                        val tid = match.groupValues[4]
+                        val tag = match.groupValues[5]
+                        val message = match.groupValues[6]
                         if (pid != myPid) {
                             if (!full) {
                                 full = true
                                 report(LogAccess.FULL)
                             }
                             synchronized(this@LogReader) {
-                                if (active) onLine(timestamp, uid, tag, message)
+                                if (active) onLine(timestamp, uid, tid, tag, message)
                             }
                         } else if (source == LogSource.LOCAL && !full && tag == TAG && message == PROBE && ++ownProbes >= 2) {
                             // Our own probes arrive but nothing from other apps: access was declined.
@@ -148,6 +153,6 @@ class LogReader(
         const val PROBE = "log access probe"
 
         // threadtime,uid format: "10-18 04:27:44.123  1000  1234  5678 D Tag     : message"
-        val LINE = Regex("""^(\d\d-\d\d\s+[\d:.]+)\s+(\S+)\s+(\d+)\s+\d+\s+[VDIWEFA]\s+(.*?)\s*: (.*)$""")
+        val LINE = Regex("""^(\d\d-\d\d\s+[\d:.]+)\s+(\S+)\s+(\d+)\s+(\d+)\s+[VDIWEFA]\s+(.*?)\s*: (.*)$""")
     }
 }

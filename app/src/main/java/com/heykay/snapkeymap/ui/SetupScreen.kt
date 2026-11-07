@@ -1,6 +1,7 @@
 package com.heykay.snapkeymap.ui
 
 import android.Manifest
+import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
@@ -12,6 +13,15 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -32,16 +42,22 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationManagerCompat
 import com.heykay.snapkeymap.GrantMethod
@@ -58,6 +74,7 @@ import rikka.shizuku.Shizuku
 private data class SetupChecks(
     val logs: Boolean,
     val shizuku: Boolean,
+    val shizukuRunning: Boolean,
     val battery: Boolean,
     val notifications: Boolean,
 )
@@ -72,26 +89,31 @@ fun SetupScreen(
 ) {
     val context = LocalContext.current
     val activity = LocalActivity.current
-    val config by SnapEngine.store.config.collectAsState()
-    val serviceOn by SnapAccessibilityService.running.collectAsState()
-    val resumes by SnapEngine.uiResumes.collectAsState()
+    val config by SnapEngine.store.config.collectAsStateWithLifecycle()
+    val serviceOn by SnapAccessibilityService.running.collectAsStateWithLifecycle()
+    val resumes by SnapEngine.uiResumes.collectAsStateWithLifecycle()
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val animate = ValueAnimator.areAnimatorsEnabled()
+    var showUnlockHint by rememberSaveable { mutableStateOf(false) }
     fun readChecks() = SetupChecks(
         logs = SnapEngine.hasLogPermission(),
         shizuku = canUseShizuku(),
+        shizukuRunning = runCatching { Shizuku.pingBinder() }.getOrDefault(false),
         battery = context.getSystemService(PowerManager::class.java)
             .isIgnoringBatteryOptimizations(context.packageName),
         notifications = NotificationManagerCompat.from(context).areNotificationsEnabled(),
     )
-    val checks by produceState(readChecks(), resumes) {
-        while (true) {
-            value = readChecks()
-            delay(1000)
+    val checksState by produceState<SetupChecks?>(null, resumes, lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                value = readChecks()
+                delay(1000)
+            }
         }
     }
+    val checks = checksState ?: return
     var selectedMethod by remember(config.grantMethod) {
-        mutableStateOf(config.grantMethod ?: if (runCatching { Shizuku.pingBinder() }.getOrDefault(false)) {
-            GrantMethod.SHIZUKU
-        } else GrantMethod.ADB)
+        mutableStateOf(config.grantMethod ?: if (checks.shizukuRunning) GrantMethod.SHIZUKU else GrantMethod.ADB)
     }
     fun isDone(page: SetupPage): Boolean = when (page) {
         SetupPage.METHOD -> config.grantMethod != null
@@ -118,7 +140,7 @@ fun SetupScreen(
     val back = { onPageChange(SetupPage.entries[(page.ordinal - 1).coerceAtLeast(0)].name) }
     BackHandler(enabled = page != SetupPage.METHOD, onBack = back)
     val optional = page == SetupPage.BATTERY || page == SetupPage.NOTIFICATIONS
-    val title = when (page) {
+    fun title(step: SetupPage) = when (step) {
         SetupPage.METHOD -> "How do you want to give log access?"
         SetupPage.LOG_ACCESS -> "Give log access"
         SetupPage.ACCESSIBILITY -> "Turn on accessibility"
@@ -136,21 +158,35 @@ fun SetupScreen(
 
     SnapScaffold(title = "Set up SnapKey Map", onBack = if (page != SetupPage.METHOD) back else null) { padding ->
         Column(
-            modifier = Modifier.fillMaxSize().padding(padding),
+            modifier = Modifier.fillMaxSize().verticalScroll(scrollState).padding(padding),
         ) {
+            AnimatedContent(
+                targetState = page,
+                transitionSpec = {
+                    if (!animate) (EnterTransition.None togetherWith ExitTransition.None).using(null)
+                    else {
+                        val direction = if (targetState.ordinal >= initialState.ordinal) 1 else -1
+                        (slideInHorizontally(tween(180)) { direction * it / 12 } + fadeIn(tween(180))) togetherWith
+                            (slideOutHorizontally(tween(140)) { -direction * it / 12 } + fadeOut(tween(140)))
+                    }
+                },
+                label = "Setup step",
+            ) { step ->
             Column(
-                modifier = Modifier.weight(1f).verticalScroll(scrollState).padding(16.dp),
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                Text("Step ${page.ordinal + 1} of ${SetupPage.entries.size}" + if (optional) " · Optional" else "")
+                Text("Step ${step.ordinal + 1} of ${SetupPage.entries.size}" +
+                    if (step == SetupPage.BATTERY || step == SetupPage.NOTIFICATIONS) " · Optional" else "")
                 LinearProgressIndicator(
-                    progress = { (page.ordinal + 1) / SetupPage.entries.size.toFloat() },
+                    progress = { (step.ordinal + 1) / SetupPage.entries.size.toFloat() },
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Text(title, style = MaterialTheme.typography.headlineSmall)
-                when (page) {
+                Text(title(step), style = MaterialTheme.typography.headlineSmall,
+                    modifier = Modifier.semantics { heading() })
+                when (step) {
                     SetupPage.METHOD -> {
-                        Text("Assign your own actions to a press, double press or hold. Oppo keeps the key private, " +
+                        Text("Assign your own actions to a press, double press, hold or tap then hold. Oppo keeps the key private, " +
                             "so SnapKey Map needs system logs to detect it. Logs stay on your phone.")
                         MethodOption(
                             title = "Shizuku",
@@ -217,7 +253,7 @@ fun SetupScreen(
                     }
                     SetupPage.TEACH -> {
                         Text("First set Settings › Snap Key › Oppo's own action to None, so both actions don't run. " +
-                            "Then teach SnapKey Map: press three times and hold once when asked. It takes about 20 seconds.")
+                            "Then teach SnapKey Map: press three times, hold once, and check a different key before saving. It takes about 30 seconds.")
                         OutlinedButton(onClick = { context.openPhoneSettings() }) { Text("Open phone settings") }
                         Button(onClick = onLearn) { Text(if (config.isTaught) "Teach again" else "Teach the Snap Key") }
                     }
@@ -226,18 +262,49 @@ fun SetupScreen(
                             "After finishing, try the key and check Last: on the home screen.")
                         Card(modifier = Modifier.fillMaxWidth()) {
                             Gesture.entries.forEach { gesture ->
-                                GestureRow(gesture, config.action(gesture), available = true) { onPick(gesture) }
+                                GestureRow(
+                                    gesture = gesture,
+                                    action = config.action(gesture),
+                                    available = true,
+                                    unlockedOnly = gesture in config.unlockedOnly,
+                                    onUnlockedOnlyChange = { on ->
+                                        SnapEngine.store.update {
+                                            it.copy(unlockedOnly = if (on) it.unlockedOnly + gesture else it.unlockedOnly - gesture)
+                                        }
+                                        if (on && !config.unlockHintShown) showUnlockHint = true
+                                    },
+                                    onClick = { onPick(gesture) },
+                                )
                             }
                         }
                         if (!config.canDetectHold) {
-                            Text("Your phone doesn't report holding the key, so Press & hold cannot be detected.")
+                            Text("Your phone doesn't report holding the key, so Press & hold and Tap, then hold cannot be detected.")
                         }
                     }
                 }
-                if (page != SetupPage.METHOD && isDone(page)) {
+                if (step != SetupPage.METHOD && isDone(step)) {
                     Text("Done", color = MaterialTheme.colorScheme.primary,
                         style = MaterialTheme.typography.titleMedium)
                 }
+            }
+            }
+            if (page != SetupPage.METHOD && !isDone(page)) {
+                Text(
+                    when (page) {
+                        SetupPage.LOG_ACCESS -> if (checks.logs && config.grantMethod == GrantMethod.SHIZUKU) {
+                            "Start Shizuku and allow SnapKey Map to continue."
+                        } else "Grant log access to continue."
+                        SetupPage.ACCESSIBILITY -> "Turn on accessibility to continue."
+                        SetupPage.BATTERY -> "Allow background operation to continue, or skip this step."
+                        SetupPage.NOTIFICATIONS -> "Allow notifications to continue, or skip this step."
+                        SetupPage.TEACH -> "Teach your Snap Key to continue."
+                        SetupPage.ACTIONS -> "Choose at least one action to finish."
+                        SetupPage.METHOD -> "Choose an access method to continue."
+                    },
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             Row(
                 modifier = Modifier.fillMaxWidth().padding(16.dp),
@@ -261,6 +328,10 @@ fun SetupScreen(
             }
         }
     }
+    if (showUnlockHint) UnlockHintDialog(onDismiss = {
+        SnapEngine.store.update { it.copy(unlockHintShown = true) }
+        showUnlockHint = false
+    })
 }
 
 @Composable

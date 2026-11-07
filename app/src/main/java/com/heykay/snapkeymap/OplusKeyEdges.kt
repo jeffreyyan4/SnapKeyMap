@@ -31,9 +31,14 @@ class OplusKeyEdges(private val onDown: () -> Unit, private val onUp: () -> Unit
         return true
     }
 
-    fun reset() {
+    fun reset(pressed: Boolean = false) {
         lastEdgeMs = null
-        pressed = false
+        this.pressed = pressed
+    }
+
+    internal fun resetFrom(other: OplusKeyEdges) {
+        lastEdgeMs = other.lastEdgeMs
+        pressed = other.pressed
     }
 
     private companion object {
@@ -44,6 +49,62 @@ class OplusKeyEdges(private val onDown: () -> Unit, private val onUp: () -> Unit
             val apart = abs(a - b)
             return minOf(apart, DAY_MS - apart) <= DUPLICATE_WINDOW_MS
         }
+    }
+}
+
+internal class TeachingLogEdges {
+    private val byCode = mutableMapOf<String?, OplusKeyEdges>()
+    private val contextFree = OplusKeyEdges({}, {})
+
+    fun deliver(
+        delivery: TeachingDelivery,
+        receipt: TeachingDelivery.Stamp,
+        timestamp: String,
+        sample: KeySample.Log,
+        runtimeBinding: KeyBinding,
+        runtimeEdges: OplusKeyEdges,
+        action: () -> Unit,
+    ) {
+        val explicitEdges = isKnownOplusKeyLine(sample.uid, sample.tag, sample.message)
+        delivery.deliver(receipt, onStale = {
+            if (explicitEdges) {
+                if (delivery.stamp.handle != null) observe(timestamp, sample)
+                else if (KeyMatching.matches(runtimeBinding, sample)) runtimeEdges.observe(timestamp)
+            }
+        }) {
+            if (receipt.handle != null && explicitEdges) observe(timestamp, sample)
+            action()
+        }
+    }
+
+    fun begin(code: String?, source: OplusKeyEdges) {
+        byCode.clear()
+        contextFree.reset()
+        byCode[null] = OplusKeyEdges({}, {}).apply { resetFrom(source) }
+        if (code != null) byCode[code] = OplusKeyEdges({}, {}).apply { resetFrom(source) }
+    }
+
+    fun observe(timestamp: String, sample: KeySample.Log) {
+        byCode.getOrPut(null) { OplusKeyEdges({}, {}) }
+        sample.threadKey?.let {
+            byCode.getOrPut(it) { OplusKeyEdges({}, {}).apply { resetFrom(contextFree) } }
+        }
+        if (sample.threadKey == null && KeyMatching.matches(KeyBinding.Logged(null, null, null), sample)) {
+            contextFree.observe(timestamp)
+        }
+        byCode.forEach { (code, edges) ->
+            if (KeyMatching.matches(KeyBinding.Logged(null, code, null), sample)) edges.observe(timestamp)
+        }
+    }
+
+    fun reset() {
+        contextFree.reset()
+        byCode.values.forEach { it.reset() }
+    }
+
+    fun restore(code: String?, target: OplusKeyEdges) {
+        val source = byCode[code] ?: contextFree
+        target.resetFrom(source)
     }
 }
 

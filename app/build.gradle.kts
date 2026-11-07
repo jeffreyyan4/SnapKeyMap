@@ -4,20 +4,26 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-// CI sets these. Every GitHub Actions run gets a higher versionCode, so new APKs install over old ones.
-val runNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
 val keystorePath: String? = System.getenv("SIGNING_KEYSTORE_PATH")
 
 android {
     namespace = "com.heykay.snapkeymap"
     compileSdk = 36
+    buildToolsVersion = "35.0.0"
 
     defaultConfig {
         applicationId = "com.heykay.snapkeymap"
         minSdk = 29
         targetSdk = 36
-        versionCode = runNumber
-        versionName = providers.gradleProperty("appVersion").get()
+        // F-Droid reads both as literals from this file.
+        versionCode = 10200
+        versionName = "1.2.0"
+    }
+
+    // F-Droid can't inspect the dependency list that Google encrypts into the signing block.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
     }
 
     signingConfigs {
@@ -37,8 +43,8 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Without the CI key (e.g. a fork), fall back to the debug key so the build still works.
-            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+            val releaseSigning = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+            signingConfig = releaseSigning
         }
     }
 
@@ -56,15 +62,27 @@ kotlin {
     jvmToolchain(17)
 }
 
+// Releases up to v1.0.14 used the CI run number (at most 67), so this scheme always installs over them.
+android.defaultConfig.let { config ->
+    val (major, minor, patch) = config.versionName!!.split(".").map(String::toInt)
+    val expected = major * 10000 + minor * 100 + patch
+    check(config.versionCode == expected) {
+        "versionCode for ${config.versionName} must be $expected, not ${config.versionCode}"
+    }
+}
+
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2025.10.01"))
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.activity:activity-compose:1.11.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.4")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
+    implementation("org.lsposed.hiddenapibypass:hiddenapibypass:6.1")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

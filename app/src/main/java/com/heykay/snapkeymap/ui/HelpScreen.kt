@@ -12,8 +12,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.HelpOutline
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -33,13 +35,22 @@ fun HelpScreen(onDone: () -> Unit, onRunSetup: () -> Unit) {
     val context = LocalContext.current
     SnapScaffold(title = "Help", onBack = onDone) { padding ->
         Column(
-            modifier = Modifier.fillMaxSize().padding(padding)
-                .verticalScroll(rememberScrollState()).padding(16.dp),
+            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+                .padding(padding).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            NoteCard(
+                icon = Icons.Rounded.RestartAlt,
+                title = "Run setup again",
+                body = "Go through the setup wizard again, for example after reinstalling Shizuku or teaching a new key. Your mappings stay.",
+                container = MaterialTheme.colorScheme.primaryContainer,
+            ) {
+                Button(onClick = onRunSetup) { Text("Run setup") }
+            }
             HelpSection(
                 icon = Icons.Rounded.Settings,
                 title = "Getting started",
+                summary = "Grant access, teach the key and choose your actions.",
                 initiallyExpanded = true,
                 body = "The setup wizard saves your progress and resumes at the first unfinished step.\n\n" +
                     "1. Choose Shizuku or Computer (ADB).\n\n" +
@@ -48,13 +59,14 @@ fun HelpScreen(onDone: () -> Unit, onRunSetup: () -> Unit) {
                     "3. Enable accessibility to run actions and open apps from the background. It cannot read screen content.\n\n" +
                     "4. Optionally allow background operation to reduce ColorOS interruptions.\n\n" +
                     "5. Optionally allow notifications for detection paused alerts.\n\n" +
-                    "6. Set Oppo's Snap Key action to None. Teach the key: press three times, then hold once.\n\n" +
-                    "7. Choose Press, Double press and Press & hold actions, then tap Finish. Test them and check Last:.",
+                    "6. Set Oppo's Snap Key action to None. Teach the key: press three times, hold once, then check a different key and save.\n\n" +
+                    "7. Choose Press, Double press, Press & hold and Tap, then hold actions, then tap Finish. Test them and check Last:.\n\n" +
+                    "Tap the lock next to a gesture to run it only when your phone is unlocked.",
             )
-            TextButton(onClick = onRunSetup) { Text("Run setup again") }
             HelpSection(
                 icon = Icons.AutoMirrored.Rounded.HelpOutline,
                 title = "Troubleshooting",
+                summary = "Fix paused detection, missed presses and background limits.",
                 body = "Paused after a restart? Reopen the app, tap Connect if needed and allow device logs. " +
                     "The one-time grant does not need repeating. While Shizuku runs and SnapKey Map is " +
                     "allowed in it, no device-logs prompt is needed. Otherwise Android asks for one-time " +
@@ -70,6 +82,7 @@ fun HelpScreen(onDone: () -> Unit, onRunSetup: () -> Unit) {
             HelpSection(
                 icon = Icons.Rounded.Info,
                 title = "Is it safe?",
+                summary = "Logs stay on your phone; learn what each permission does.",
                 body = "The app has no INTERNET permission. It does not send your logs or settings off the phone. " +
                     "Apps and websites you open handle their own data.\n\n" +
                     "Log access can see the whole live system log. Lines are checked in memory, not saved as a log. " +
@@ -80,7 +93,9 @@ fun HelpScreen(onDone: () -> Unit, onRunSetup: () -> Unit) {
                     "If you allow SnapKey Map in Shizuku, the app also uses Shizuku to run logcat as the " +
                     "shell user. Shizuku must be running for this. Lines are still checked in memory " +
                     "and discarded, not saved as a log, with the teaching exception above. " +
-                    "Shizuku is not used to run mapped actions.\n\n" +
+                    "Through Shizuku the app also reads key input events to detect the Snap Key precisely, " +
+                    "and switches the ringer mode so Silent doesn't turn on Do Not Disturb. " +
+                    "Other mapped actions don't use Shizuku.\n\n" +
                     "Permissions: read device logs; vibrate; show notifications; access Do Not Disturb controls; " +
                     "ask to ignore battery optimisation; ask Shizuku for the one-time log grant and shell log reading.\n\n" +
                     "The code is open source. Provided as is, without warranty. READ_LOGS granted over adb is " +
@@ -104,6 +119,7 @@ private fun HelpSection(
     icon: ImageVector,
     title: String,
     body: String,
+    summary: String,
     initiallyExpanded: Boolean = false,
     onSource: (() -> Unit)? = null,
 ) {
@@ -111,14 +127,14 @@ private fun HelpSection(
     NoteCard(
         icon = icon,
         title = title,
-        body = if (expanded) body else "Show the essentials.",
+        body = if (expanded) body else summary,
     ) {
-        TextButton(
-            onClick = { expanded = !expanded },
+        CardTextButton(
+            if (expanded) "Hide" else "Read",
             modifier = Modifier.semantics { stateDescription = if (expanded) "Expanded" else "Collapsed" },
-        ) { Text(if (expanded) "Hide" else "Read") }
+        ) { expanded = !expanded }
         if (expanded && onSource != null) {
-            TextButton(onClick = onSource) { Text("Source code") }
+            CardTextButton("Source code", onClick = onSource)
         }
     }
 }
