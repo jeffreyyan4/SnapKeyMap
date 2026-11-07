@@ -75,9 +75,9 @@ class OplusKeyEdgesTest {
         val h = Harness()
         h.duplicatedLine(0)
         h.duplicatedLine(126)
-        h.clock.advanceTo(325)
+        h.clock.advanceTo(475)
         assertTrue(h.gestures.isEmpty())
-        h.clock.advanceTo(326)
+        h.clock.advanceTo(476)
         assertEquals(listOf(Gesture.SINGLE), h.gestures)
     }
 
